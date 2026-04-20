@@ -68,24 +68,25 @@ int GridSearch(IReadOnlyList<PointF> points, Size size, float radius)
     //Create Offsets
     List<Point> offsets = new() {
         new Point(-1, -1), new Point( 0, -1), new Point( 1, -1),
-        new Point(-1,  0),                    new Point( 1,  0),
+        new Point(-1,  0), new Point( 0,  0), new Point( 1,  0),
         new Point(-1,  1), new Point( 0,  1), new Point( 1,  1),
     };
     //Create Grid
-    int width = (int)(size.Width / radius);
-    int height = (int)(size.Height / radius);
+    float cellSize = radius;
+    int width = (int)(size.Width / cellSize);
+    int height = (int)(size.Height / cellSize);
     List<PointF>[,] grid = new List<PointF>[width, height];
     List<Point> coords = new List<Point>();
-    for (int x = 0; x < size.Width; x++)
+    for (int x = 0; x < width; x++)
     {
-        for (int y = 0; y < size.Height; y++)
+        for (int y = 0; y < height; y++)
         {
             coords.Add(new Point(x, y));
             grid[x, y] = new();
         }
     }
     //Fill Grid
-    foreach (PointF point in points) grid[(int)(point.X / radius), (int)(point.Y / radius)].Add(point);
+    foreach (PointF point in points) grid[(int)(point.X / cellSize), (int)(point.Y / cellSize)].Add(point);
     //Search Grid
     int total = points.Count;
     int highestCount = 0;
