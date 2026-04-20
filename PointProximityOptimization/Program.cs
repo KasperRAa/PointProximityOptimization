@@ -19,15 +19,15 @@ setupSW.Stop();
 Console.WriteLine($"{points.Count} points in an area of {size.Width * size.Height} with dimensions [{size.Width};{size.Height}] ({setupSW.Elapsed.Milliseconds}ms)");
 
 Console.WriteLine($"Search with radius of {radius:0.00}:");
-List<Func<IReadOnlyList<PointF>, Size, float, int>> funcs = new() { BasicSearch, ParallelSearch };
+List<Func<IReadOnlyList<PointF>, Size, float, int>> funcs = new() { BasicSearch, ParallelSearch, GridSearch };
 foreach (var func in funcs)
 {
-    string name = func.Method.Name;
+    string name = func.Method.Name[12..^4];
     Stopwatch sw = Stopwatch.StartNew();
     int count = func(points, size, radius);
     sw.Stop();
     long time = sw.ElapsedMilliseconds;
-    Console.WriteLine($"\t{name} result for highest proximity count: {count} ({time}ms)");
+    Console.WriteLine($"\t{name} result for highest proximity count with radius of {radius}: {count} ({time}ms)");
 }
 Console.ReadKey(true);
 
@@ -61,6 +61,56 @@ int ParallelSearch(IReadOnlyList<PointF> points, Size size, float radius)
         }
         if (count > highestCount) highestCount = count;
     });
+    return highestCount;
+}
+int GridSearch(IReadOnlyList<PointF> points, Size size, float radius)
+{
+    //Create Offsets
+    List<Point> offsets = new() {
+        new Point(-1, -1), new Point( 0, -1), new Point( 1, -1),
+        new Point(-1,  0),                    new Point( 1,  0),
+        new Point(-1,  1), new Point( 0,  1), new Point( 1,  1),
+    };
+    //Create Grid
+    int width = (int)(size.Width / radius);
+    int height = (int)(size.Height / radius);
+    List<PointF>[,] grid = new List<PointF>[width, height];
+    List<Point> coords = new List<Point>();
+    for (int x = 0; x < size.Width; x++)
+    {
+        for (int y = 0; y < size.Height; y++)
+        {
+            coords.Add(new Point(x, y));
+            grid[x, y] = new();
+        }
+    }
+    //Fill Grid
+    foreach (PointF point in points) grid[(int)(point.X / radius), (int)(point.Y / radius)].Add(point);
+    //Search Grid
+    int total = points.Count;
+    int highestCount = 0;
+    foreach (var coord in coords)
+    {
+        List<PointF> list1 = grid[coord.X, coord.Y];
+        foreach (var point1 in list1)
+        {
+            int count = 0;
+            foreach (var offset in offsets)
+            {
+                int x = coord.X + offset.X;
+                int y = coord.Y + offset.Y;
+                if (x < 0 || y < 0) continue;
+                if (x >= width || y >= height) continue;
+                List<PointF> list2 = grid[x, y];
+                foreach (var point2 in list2)
+                {
+                    if (point1 == point2) continue;
+                    if (GetDistance(point1, point2) < radius) count++;
+                }
+            }
+            if (count > highestCount) highestCount = count;
+        }
+    }
     return highestCount;
 }
 
