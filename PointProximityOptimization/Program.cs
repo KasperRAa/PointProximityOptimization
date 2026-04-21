@@ -145,8 +145,8 @@ int ParallelGridSearch(Size size, IReadOnlyList<PointF> points, float radius)
     };
     //Create Grid
     float cellSize = radius;
-    int width = (int)(size.Width / cellSize);
-    int height = (int)(size.Height / cellSize);
+    int width = (int)(size.Width / cellSize) + 1;
+    int height = (int)(size.Height / cellSize) + 1;
     List<PointF>[,] grid = new List<PointF>[width, height];
     List<Point> coords = new List<Point>();
     for (int x = 0; x < width; x++)
