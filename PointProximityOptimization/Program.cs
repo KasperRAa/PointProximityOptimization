@@ -1,11 +1,14 @@
 ﻿// See https://aka.ms/new-console-template for more information
 
+using ILGPU;
+using ILGPU.Runtime;
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Reflection;
 
 Size size = new Size(10, 10);
-List<Func<Size, IReadOnlyList<PointF>, float, int>> allFuncs = new() { BasicSearch, ParallelSearch, GridSearch, ParallelGridSearch };
+List<Func<Size, IReadOnlyList<PointF>, float, int>> allFuncs = new() { BasicSearch, ParallelSearch, GridSearch, ParallelGridSearch, BasicGPUSearch };
 
 while (true)
 {
@@ -50,6 +53,49 @@ List<PointF> GetPoints(int total)
     Console.WriteLine($"{points.Count} points in an area of {size.Width * size.Height} with dimensions [{size.Width};{size.Height}] ({setupSW.Elapsed.Milliseconds}ms)");
     return points;
 }
+
+void TryAllSearches(Size size, IReadOnlyList<PointF> points, float radius, List<Func<Size, IReadOnlyList<PointF>, float, int>> funcs)
+{
+    Console.WriteLine($"{points.Count} points in an area of {size.Width * size.Height} with dimensions [{size.Width};{size.Height}] and radius of {radius:0.00}:");
+    foreach (var func in funcs)
+    {
+        Console.Write("\t");
+        TrySearch(size, points, radius, func);
+    }
+}
+void TrySpecificSearch(Size size, IReadOnlyList<PointF> points, float radius, List<Func<Size, IReadOnlyList<PointF>, float, int>> funcs)
+{
+    var func = PickFromOptions(funcs, GetNameOfFunc);
+    Console.WriteLine($"{points.Count} points in an area of {size.Width * size.Height} with dimensions [{size.Width};{size.Height}] and radius of {radius:0.00}:");
+    Console.Write("\t");
+    TrySearch(size, points, radius, func);
+}
+void TrySearch(Size size, IReadOnlyList<PointF> points, float radius, Func<Size, IReadOnlyList<PointF>, float, int> func)
+{
+    string name = GetNameOfFunc(func);
+    Stopwatch sw = Stopwatch.StartNew();
+    int count = func(size, points, radius);
+    sw.Stop();
+    long time = sw.ElapsedMilliseconds;
+    Console.WriteLine($"{name} result for highest proximity count with radius of {radius}: {count} ({time}ms)");
+}
+
+T? PickFromOptions<T>(List<T?> options, Func<T, string> getString)
+{
+    int count = options.Count;
+    if (count > 10) throw new ArgumentOutOfRangeException("\"options\" must be less than 10");
+    Console.WriteLine("Choose 1 of:");
+    char? c = null;
+    while (c is null || !char.IsDigit(c.Value) || int.Parse(c.Value.ToString()) >= count)
+    {
+        int n = 0;
+        foreach (var option in options) Console.WriteLine($"\t{n++}: {getString(option)}");
+        c = Console.ReadKey(true).KeyChar;
+    }
+    return options[int.Parse(c.Value.ToString())];
+}
+
+string GetNameOfFunc(Func<Size, IReadOnlyList<PointF>, float, int> func) => func.Method.Name[12..^4];
 
 
 int BasicSearch(Size size, IReadOnlyList<PointF> points, float radius)
@@ -186,53 +232,53 @@ int ParallelGridSearch(Size size, IReadOnlyList<PointF> points, float radius)
     });
     return highestCount;
 }
+int BasicGPUSearch(Size size, IReadOnlyList<PointF> points, float radius)//My first time working with the GPU. Used AI to get the basics, which I then modified.
+{
+    // 1. Create context and accelerator (GPU)
+    using var context = Context.CreateDefault();
+    using var accelerator = context.GetPreferredDevice(false).CreateAccelerator(context);
 
-float GetDistance(PointF p1, PointF p2)
+    // 2. Define the GPU-function (Kernel)
+    static void Kernel(Index1D i, ArrayView<PointF> a, ArrayView<int> res, float radius)
+    {
+        int total = a.IntLength;
+        for (int j = 0; j < total; j++)
+        {
+            if (j == i) continue;
+            res[i] += GetDistance(a[i], a[j]) < radius ? 1 : 0;
+        }
+    }
+
+    // 3. Load the Kernel
+    var kernel = accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView<PointF>, ArrayView<int>, float>(Kernel);
+
+    // 4. Send data to GPU, execute and return data to CPU
+    // Allocate space on the GPU and copy the data immediately
+    using var devicePoints = accelerator.Allocate1D(points.ToArray());
+    // Allocate only space for the result (we do not need to copy data inside)
+    int count = points.Count;
+    using var deviceResult = accelerator.Allocate1D<int>(count);
+    // Ask the GPU to run Kernel 'count' times in parallel
+    kernel(count, devicePoints.View, deviceResult.View, radius);
+    // Wait for the GPU to finish
+    accelerator.Synchronize();
+    // Copy from VRAM to hostResult array in RAM
+    int[] hostResult = new int[count];
+    deviceResult.CopyToCPU(hostResult);
+
+    return hostResult.Max();
+}
+
+static float GetDistance(PointF p1, PointF p2)
 {
     float dx = p1.X - p2.X;
     float dy = p1.Y - p2.Y;
     return MathF.Sqrt(dx * dx + dy * dy);
 }
 
-void TryAllSearches(Size size, IReadOnlyList<PointF> points, float radius, List<Func<Size, IReadOnlyList<PointF>, float, int>> funcs)
-{
-    Console.WriteLine($"{points.Count} points in an area of {size.Width * size.Height} with dimensions [{size.Width};{size.Height}] and radius of {radius:0.00}:");
-    foreach (var func in funcs)
-    {
-        Console.Write("\t");
-        TrySearch(size, points, radius, func);
-    }
-}
-void TrySpecificSearch(Size size, IReadOnlyList<PointF> points, float radius, List<Func<Size, IReadOnlyList<PointF>, float, int>> funcs)
-{
-    var func = PickFromOptions(funcs, GetNameOfFunc);
-    Console.WriteLine($"{points.Count} points in an area of {size.Width * size.Height} with dimensions [{size.Width};{size.Height}] and radius of {radius:0.00}:");
-    Console.Write("\t");
-    TrySearch(size, points, radius, func);
-}
-void TrySearch(Size size, IReadOnlyList<PointF> points, float radius, Func<Size, IReadOnlyList<PointF>, float, int> func)
-{
-    string name = GetNameOfFunc(func);
-    Stopwatch sw = Stopwatch.StartNew();
-    int count = func(size, points, radius);
-    sw.Stop();
-    long time = sw.ElapsedMilliseconds;
-    Console.WriteLine($"{name} result for highest proximity count with radius of {radius}: {count} ({time}ms)");
-}
-
-T? PickFromOptions<T>(List<T?> options, Func<T, string> getString)
-{
-    int count = options.Count;
-    if (count > 10) throw new ArgumentOutOfRangeException("\"options\" must be less than 10");
-    Console.WriteLine("Choose 1 of:");
-    char? c = null;
-    while (c is null || !char.IsDigit(c.Value) || int.Parse(c.Value.ToString()) >= count)
-    {
-        int n = 0;
-        foreach (var option in options) Console.WriteLine($"\t{n++}: {getString(option)}");
-        c = Console.ReadKey(true).KeyChar;
-    }
-    return options[int.Parse(c.Value.ToString())];
-}
-
-string GetNameOfFunc(Func<Size, IReadOnlyList<PointF>, float, int> func) => func.Method.Name[12..^4];
+//100000 points in an area of 100 with dimensions [10;10] and radius of 1,00:
+//        BasicSearch result for highest proximity count with radius of 1: 3319 (139053ms)
+//        ParallelSearch result for highest proximity count with radius of 1: 3319 (19180ms)
+//        GridSearch result for highest proximity count with radius of 1: 3319 (12769ms)
+//        ParallelGridSearch result for highest proximity count with radius of 1: 3319 (1762ms)
+//        BasicGPUSearch | result for highest proximity count with radius of 1: 3319 (199ms)
