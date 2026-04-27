@@ -8,7 +8,7 @@ using System.Drawing;
 using System.Reflection;
 
 Size size = new Size(10, 10);
-List<Func<Size, IReadOnlyList<PointF>, float, int>> allFuncs = new() { BasicSearch, ParallelSearch, GridSearch, ParallelGridSearch, BasicGPUSearch };
+List<Func<Size, IReadOnlyList<PointF>, float, int>> allFuncs = new() { BasicSearch, ParallelSearch, GridSearch, ParallelGridSearch, BasicGPUSearch, GridGPUSearch };
 
 while (true)
 {
@@ -140,8 +140,8 @@ int GridSearch(Size size, IReadOnlyList<PointF> points, float radius)
     };
     //Create Grid
     float cellSize = radius;
-    int width = (int)(size.Width / cellSize);
-    int height = (int)(size.Height / cellSize);
+    int width = (int)(size.Width / cellSize) + 1;
+    int height = (int)(size.Height / cellSize) + 1;
     List<PointF>[,] grid = new List<PointF>[width, height];
     List<Point> coords = new List<Point>();
     for (int x = 0; x < width; x++)
@@ -239,18 +239,18 @@ int BasicGPUSearch(Size size, IReadOnlyList<PointF> points, float radius)//My fi
     using var accelerator = context.GetPreferredDevice(false).CreateAccelerator(context);
 
     // 2. Define the GPU-function (Kernel)
-    static void Kernel(Index1D i, ArrayView<PointF> a, ArrayView<int> res, float radius)
+    static void AddKernel(Index1D i, ArrayView<PointF> points, ArrayView<int> res, float radius)
     {
-        int total = a.IntLength;
+        int total = points.IntLength;
         for (int j = 0; j < total; j++)
         {
             if (j == i) continue;
-            res[i] += GetDistance(a[i], a[j]) < radius ? 1 : 0;
+            res[i] += GetDistance(points[i], points[j]) < radius ? 1 : 0;
         }
     }
 
     // 3. Load the Kernel
-    var kernel = accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView<PointF>, ArrayView<int>, float>(Kernel);
+    var kernel = accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView<PointF>, ArrayView<int>, float>(AddKernel);
 
     // 4. Send data to GPU, execute and return data to CPU
     // Allocate space on the GPU and copy the data immediately
@@ -268,6 +268,100 @@ int BasicGPUSearch(Size size, IReadOnlyList<PointF> points, float radius)//My fi
 
     return hostResult.Max();
 }
+int GridGPUSearch(Size size, IReadOnlyList<PointF> points, float radius)//My first time working with the GPU. Used AI to get the basics, which I then modified.
+{
+    //Create Offsets
+    List<Point> offsets = new() {
+        new Point(-1, -1), new Point( 0, -1), new Point( 1, -1),
+        new Point(-1,  0), new Point( 0,  0), new Point( 1,  0),
+        new Point(-1,  1), new Point( 0,  1), new Point( 1,  1),
+    };
+    //Create Grid
+    float cellSize = radius;
+    int width = (int)(size.Width / cellSize) + 1;
+    int height = (int)(size.Height / cellSize) + 1;
+    List<PointF>[,] grid = new List<PointF>[width, height];
+    List<Point> coords = new List<Point>();
+    for (int x = 0; x < width; x++)
+    {
+        for (int y = 0; y < height; y++)
+        {
+            coords.Add(new Point(x, y));
+            grid[x, y] = new();
+        }
+    }
+    //Fill Grid
+    foreach (PointF point in points) grid[(int)(point.X / cellSize), (int)(point.Y / cellSize)].Add(point);
+
+    //Flatten Grid
+    int area = width * height;
+    int[] starts = new int[area];
+    int[] ends = new int[area];
+    int count = points.Count;
+    List<PointF> flattenedGrid = new();
+    for (int x = 0; x < width; x++)
+    {
+        for (int y = 0; y < height; y++)
+        {
+            int p = x * height + y;
+            starts[p] = flattenedGrid.Count;
+            flattenedGrid.AddRange(grid[x, y]);
+            ends[p] = flattenedGrid.Count;
+        }
+    }
+
+    //Search Grid
+    using var context = Context.CreateDefault();
+    using var accelerator = context.GetPreferredDevice(false).CreateAccelerator(context);
+
+    static void AddKernel(
+        Index1D pointIndex,
+        ArrayView<int> starts, ArrayView<int> ends, ArrayView<PointF> points, ArrayView<Point> offsets, ArrayView<int> res,
+        float radius, float cellSize, int height, int width
+        )
+    {
+        int baseX = (int)(points[pointIndex].X / cellSize);
+        int baseY = (int)(points[pointIndex].Y / cellSize);
+        for (int offsetIndex = 0; offsetIndex < offsets.Length; offsetIndex++)
+        {
+            var offset = offsets[offsetIndex];
+            int x = baseX + offset.X;
+            int y = baseY + offset.Y;
+            if (x < 0 || y < 0) continue;
+            if (x >= width || y >= height) continue;
+            int n = x * height + y;
+            int start = starts[n];
+            int end = ends[n];
+            for (int j = start; j < end; j++)
+            {
+                if (j == pointIndex) continue;
+                res[pointIndex] += GetDistance(points[pointIndex], points[j]) < radius ? 1 : 0;
+            }
+        }
+    }
+
+    var kernel = accelerator.LoadAutoGroupedStreamKernel<
+        Index1D,
+        ArrayView<int>, ArrayView<int>, ArrayView<PointF>, ArrayView<Point>, ArrayView<int>,
+        float, float, int, int
+        >(AddKernel);
+
+    using var deviceStarts = accelerator.Allocate1D(starts);
+    using var deviceEnds = accelerator.Allocate1D(ends);
+
+    using var devicePoints = accelerator.Allocate1D(flattenedGrid.ToArray());
+    using var deviceOffsets = accelerator.Allocate1D(offsets.ToArray());
+    using var deviceResult = accelerator.Allocate1D<int>(count);
+
+    kernel(count, deviceStarts.View, deviceEnds.View, devicePoints.View, deviceOffsets.View, deviceResult.View, radius, cellSize, height, width);
+
+    accelerator.Synchronize();
+
+    int[] hostResult = new int[count];
+    deviceResult.CopyToCPU(hostResult);
+
+    return hostResult.Max();
+}
 
 static float GetDistance(PointF p1, PointF p2)
 {
@@ -277,8 +371,9 @@ static float GetDistance(PointF p1, PointF p2)
 }
 
 //100000 points in an area of 100 with dimensions [10;10] and radius of 1,00:
-//        BasicSearch result for highest proximity count with radius of 1: 3319 (139053ms)
-//        ParallelSearch result for highest proximity count with radius of 1: 3319 (19180ms)
-//        GridSearch result for highest proximity count with radius of 1: 3319 (12769ms)
-//        ParallelGridSearch result for highest proximity count with radius of 1: 3319 (1762ms)
-//        BasicGPUSearch | result for highest proximity count with radius of 1: 3319 (199ms)
+//        BasicSearch result for highest proximity count with radius of 1: 3351(129962ms)
+//        ParallelSearch result for highest proximity count with radius of 1: 3351(18574ms)
+//        GridSearch result for highest proximity count with radius of 1: 3351(12497ms)
+//        ParallelGridSearch result for highest proximity count with radius of 1: 3351(1769ms)
+//        BasicGPUSearch | result for highest proximity count with radius of 1: 3351(203ms)
+//        GridGPUSearch | result for highest proximity count with radius of 1: 3351(112ms)
