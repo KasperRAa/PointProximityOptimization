@@ -117,7 +117,7 @@ int BasicSearch(Size size, IReadOnlyList<PointF> points, float radius)
         for (int j = 0; j < total; j++)
         {
             if (j == i) continue;
-            if (GetDistance(points[i], points[j]) < radius) count++;
+            if (PointsAreClose(points[i], points[j], radius)) count++;
         }
         if (count > highestCount) highestCount = count;
     }
@@ -133,7 +133,7 @@ int ParallelSearch(Size size, IReadOnlyList<PointF> points, float radius)
         for (int j = 0; j < total; j++)
         {
             if (j == i) continue;
-            if (GetDistance(points[i], points[j]) < radius) count++;
+            if (PointsAreClose(points[i], points[j], radius)) count++;
         }
         if (count > highestCount) highestCount = count;
     });
@@ -182,7 +182,7 @@ int GridSearch(Size size, IReadOnlyList<PointF> points, float radius)
                 foreach (var point2 in list2)
                 {
                     if (point1 == point2) continue;
-                    if (GetDistance(point1, point2) < radius) count++;
+                    if (PointsAreClose(point1, point2, radius)) count++;
                 }
             }
             if (count > highestCount) highestCount = count;
@@ -233,7 +233,7 @@ int ParallelGridSearch(Size size, IReadOnlyList<PointF> points, float radius)
                 foreach (var point2 in list2)
                 {
                     if (point1 == point2) continue;
-                    if (GetDistance(point1, point2) < radius) count++;
+                    if (PointsAreClose(point1, point2, radius)) count++;
                 }
             }
             if (count > highestCount) highestCount = count;
@@ -316,20 +316,20 @@ int GridGPUSearch(Size size, IReadOnlyList<PointF> points, float radius)//My fir
     return hostResult.Max();
 }
 
-static float GetDistance(PointF p1, PointF p2)
+static bool PointsAreClose(PointF p1, PointF p2, float r)
 {
     float dx = p1.X - p2.X;
     float dy = p1.Y - p2.Y;
-    return MathF.Sqrt(dx * dx + dy * dy);
+    return dx * dx + dy * dy < r * r;
 }
 
 //100000 points in an area of 100 with dimensions [10;10] and radius of 1,00:
-//        BasicSearch result for highest proximity count with radius of 1: 3287 (133340ms)
-//        ParallelSearch result for highest proximity count with radius of 1: 3287(18671ms)
-//        GridSearch result for highest proximity count with radius of 1: 3287(12648ms)
-//        ParallelGridSearch result for highest proximity count with radius of 1: 3287(1836ms)
-//        BasicGPUSearc result for highest proximity count with radius of 1: 3287(245ms)
-//        GridGPUSearc result for highest proximity count with radius of 1: 3287(12ms)
+//        BasicSearch result for highest proximity count with radius of 1: 3290 (109980ms)
+//        ParallelSearch result for highest proximity count with radius of 1: 3290(17269ms)
+//        GridSearch result for highest proximity count with radius of 1: 3290(10553ms)
+//        ParallelGridSearch result for highest proximity count with radius of 1: 3290(1627ms)
+//        BasicGPUSearc result for highest proximity count with radius of 1: 3290(314ms)
+//        GridGPUSearc result for highest proximity count with radius of 1: 3290(12ms)
 
 static void AddKernel_BasicGPUSearch(Index1D i, ArrayView<PointF> points, ArrayView<int> res, float radius)
 {
@@ -337,7 +337,7 @@ static void AddKernel_BasicGPUSearch(Index1D i, ArrayView<PointF> points, ArrayV
     for (int j = 0; j < total; j++)
     {
         if (j == i) continue;
-        res[i] += GetDistance(points[i], points[j]) < radius ? 1 : 0;
+        res[i] += PointsAreClose(points[i], points[j], radius) ? 1 : 0;
     }
 }
 static void AddKernel_GridGPUSearch(
@@ -361,7 +361,7 @@ static void AddKernel_GridGPUSearch(
         for (int j = start; j < end; j++)
         {
             if (j == pointIndex) continue;
-            res[pointIndex] += GetDistance(points[pointIndex], points[j]) < radius ? 1 : 0;
+            res[pointIndex] += PointsAreClose(points[pointIndex], points[j], radius) ? 1 : 0;
         }
     }
 }
